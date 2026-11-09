@@ -1,0 +1,273 @@
+openapi: 3.1.0
+info:
+  title: Harbor & Hearth Pickup Ordering API
+  version: 1.0.0
+  summary: Portfolio contract for a fictional pickup-ordering service
+  description: >-
+    Self-initiated case study. This is a proposed contract, not a live service.
+    A submitted order awaits restaurant review and is not a fulfilment commitment.
+servers:
+  - url: https://api.example.invalid/v1
+    description: Reserved example domain; no service is hosted here
+tags:
+  - name: Menu
+  - name: Orders
+  - name: Customer verification
+  - name: Staff
+paths:
+  /menu:
+    get:
+      tags: [Menu]
+      summary: List published menu items
+      operationId: listMenu
+      responses:
+        '200':
+          description: Current published menu
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, currency]
+                properties:
+                  currency: { type: string, minLength: 3, maxLength: 3, example: USD }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/MenuItem' }
+        default: { $ref: '#/components/responses/Problem' }
+  /orders:
+    post:
+      tags: [Orders]
+      summary: Submit a pickup order request
+      description: Creates an order in awaiting_review; staff acceptance is a separate action.
+      operationId: submitOrder
+      security: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 16, maxLength: 128 }
+          description: Reuse for a retry of the same logical request only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateOrderRequest' }
+      responses:
+        '202':
+          description: Request accepted for staff review
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderSubmission' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+        default: { $ref: '#/components/responses/Problem' }
+  /orders/{orderReference}/verification:
+    post:
+      tags: [Customer verification]
+      summary: Request a one-time status verification code
+      operationId: requestStatusCode
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OrderReference'
+      responses:
+        '202':
+          description: Request accepted; response does not confirm that a reference exists
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message: { type: string, example: If eligible, a verification code will be sent. }
+        '429': { $ref: '#/components/responses/Problem' }
+        default: { $ref: '#/components/responses/Problem' }
+  /orders/{orderReference}/status:
+    post:
+      tags: [Customer verification]
+      summary: Retrieve minimal order status after verification
+      operationId: getOrderStatus
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/OrderReference'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [verificationCode]
+              properties:
+                verificationCode: { type: string, minLength: 6, maxLength: 12, writeOnly: true }
+      responses:
+        '200':
+          description: Minimal customer-safe status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CustomerOrderStatus' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '429': { $ref: '#/components/responses/Problem' }
+        default: { $ref: '#/components/responses/Problem' }
+  /staff/orders/{orderReference}/transitions:
+    post:
+      tags: [Staff]
+      summary: Apply a valid staff-controlled order transition
+      operationId: transitionOrder
+      security:
+        - staffBearer: []
+      parameters:
+        - $ref: '#/components/parameters/OrderReference'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransitionRequest' }
+      responses:
+        '200':
+          description: Transition committed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StaffOrderState' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '403': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        default: { $ref: '#/components/responses/Problem' }
+components:
+  securitySchemes:
+    staffBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Example only; real issuer, audience, role claims, and token policy require design.
+  parameters:
+    OrderReference:
+      in: path
+      name: orderReference
+      required: true
+      schema: { type: string, minLength: 12, maxLength: 40, pattern: '^[A-Z0-9-]+$' }
+  responses:
+    Problem:
+      description: Request could not be completed
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+  schemas:
+    MenuItem:
+      type: object
+      required: [id, name, priceMinor, available, options]
+      properties:
+        id: { type: string, example: bowl-01 }
+        name: { type: string, example: Roasted vegetable bowl }
+        description: { type: string }
+        priceMinor: { type: integer, minimum: 0, description: Amount in minor currency units. }
+        available: { type: boolean }
+        options:
+          type: array
+          items:
+            type: object
+            required: [id, label, required]
+            properties:
+              id: { type: string }
+              label: { type: string }
+              required: { type: boolean }
+              choices:
+                type: array
+                items:
+                  type: object
+                  required: [id, label, priceDeltaMinor]
+                  properties:
+                    id: { type: string }
+                    label: { type: string }
+                    priceDeltaMinor: { type: integer }
+    CreateOrderRequest:
+      type: object
+      required: [customer, items, acknowledgements]
+      properties:
+        customer:
+          type: object
+          required: [name, contactChannel, contactValue]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 80 }
+            contactChannel: { type: string, enum: [sms, email] }
+            contactValue: { type: string, minLength: 3, maxLength: 254, writeOnly: true }
+        items:
+          type: array
+          minItems: 1
+          maxItems: 30
+          items:
+            type: object
+            required: [menuItemId, quantity]
+            properties:
+              menuItemId: { type: string }
+              quantity: { type: integer, minimum: 1, maximum: 20 }
+              optionChoiceIds:
+                type: array
+                items: { type: string }
+              note: { type: string, maxLength: 250 }
+        acknowledgements:
+          type: object
+          required: [pickupTerms, allergyNotice]
+          properties:
+            pickupTerms: { type: boolean, const: true }
+            allergyNotice: { type: boolean, const: true }
+    OrderSubmission:
+      type: object
+      required: [orderReference, state, submittedAt, currency, totalMinor, message]
+      properties:
+        orderReference: { type: string }
+        state: { type: string, const: awaiting_review }
+        submittedAt: { type: string, format: date-time }
+        currency: { type: string, minLength: 3, maxLength: 3 }
+        totalMinor: { type: integer, minimum: 0 }
+        message: { type: string, example: Your request was received and is waiting for restaurant review. }
+    CustomerOrderStatus:
+      type: object
+      required: [orderReference, state, lastUpdatedAt, pickupGuidance]
+      properties:
+        orderReference: { type: string }
+        state:
+          type: string
+          enum: [awaiting_review, accepted, preparing, ready, collected, rejected, cancelled]
+        lastUpdatedAt: { type: string, format: date-time }
+        pickupGuidance: { type: string, maxLength: 300 }
+    TransitionRequest:
+      type: object
+      required: [expectedState, targetState]
+      properties:
+        expectedState:
+          type: string
+          enum: [awaiting_review, accepted, preparing, ready]
+        targetState:
+          type: string
+          enum: [accepted, rejected, preparing, ready, collected, cancelled]
+        reasonCode:
+          type: string
+          enum: [capacity, item_unavailable, customer_request, operational_issue, other]
+        reasonDetail: { type: string, maxLength: 300 }
+    StaffOrderState:
+      type: object
+      required: [orderReference, state, changedAt]
+      properties:
+        orderReference: { type: string }
+        state: { type: string }
+        changedAt: { type: string, format: date-time }
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        detail: { type: string }
+        instance: { type: string, format: uri-reference }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string }
+              message: { type: string }
